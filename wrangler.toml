@@ -1,0 +1,8 @@
+name = "miruro-scraper"
+main = "worker-megaplay.js"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "megaplay-db"
+database_id = "b397d354-405c-46af-a2b0-80c8d4f27456"
