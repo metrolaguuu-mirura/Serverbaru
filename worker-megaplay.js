@@ -164,8 +164,69 @@ async function scrapeSources(fileId) {
   });
   if (!res.ok) throw new Error(`getSources failed: ${res.status}`);
   const data = await res.json();
-  if (!data.sources?.file) throw new Error('No video source found');
-  return data;
+
+  // Mode 1: sources.file langsung ada (unencrypted)
+  if (data.sources?.file) return data;
+
+  // Mode 2: encrypted source (enc) — perlu decrypt AES-CBC
+  if (data.enc) {
+    const decrypted = await decryptEnc(data.enc);
+    data.sources = { file: decrypted };
+    return data;
+  }
+
+  throw new Error('No video source found');
+}
+
+// ─── DECRYPT ENCRYPTED SOURCE (AES-CBC) ───
+// Key dari newclient.min.js: "i?LMTAx0Q6,:}50U"
+// IV: "enc_i"
+async function decryptEnc(encStr) {
+  // Key: "i?LMTAx0Q6,:}50U" padded ke 32 bytes dengan zeros
+  const keyStr = 'i?LMTAx0Q6,:}50U';
+  const keyBytes = new Uint8Array(32);
+  const encoder = new TextEncoder();
+  const keyEncoded = encoder.encode(keyStr);
+  keyBytes.set(keyEncoded.subarray(0, Math.min(32, keyEncoded.length)));
+
+  // IV: "enc_i" padded ke 16 bytes dengan zeros
+  const ivBytes = new Uint8Array(16);
+  ivBytes.set(encoder.encode('enc_i'));
+
+  // Import key
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']
+  );
+
+  // Base64url decode: replace - → +, _ → /, pad =
+  let b64 = encStr.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4;
+  if (pad) b64 += '='.repeat(4 - pad);
+
+  // Decode base64 ke bytes
+  const binaryStr = atob(b64);
+  const cipherBytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) {
+    cipherBytes[i] = binaryStr.charCodeAt(i);
+  }
+
+  // Decrypt AES-CBC
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-CBC', iv: ivBytes }, cryptoKey, cipherBytes
+  );
+
+  const raw = new TextDecoder().decode(decrypted);
+
+  // IV mismatch causes 16 bytes garbage at start — extract clean URL
+  // Look for m3u8 URL pattern in decrypted output
+  const urlMatch = raw.match(/https?:\/\/[^\s"']+\.m3u8[^\s"']*/);
+  if (urlMatch) return urlMatch[0];
+
+  // Fallback: try to find CDN domain directly
+  const cdnMatch = raw.match(/cdn\.[^\s"']+\.m3u8[^\s"']*/);
+  if (cdnMatch) return 'https://' + cdnMatch[0];
+
+  return raw.replace(/[^\x20-\x7E]/g, '').trim();
 }
 
 async function scrapeMegaplay(anilistId, epNum, lang = 'sub') {
